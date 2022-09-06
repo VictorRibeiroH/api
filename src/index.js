@@ -1,10 +1,28 @@
 const { ApolloServer, gql } = require("apollo-server");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectID } = require("mongodb");
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
-
+const jwt = require("jsonwebtoken");
 dotenv.config();
-const { DB_URI, DB_NAME } = process.env;
+
+const { DB_URI, DB_NAME, JWT_SECRET } = process.env;
+
+const getToken = (user) =>
+  jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "30 days" });
+
+const getUserFromToken = async (token, db) => {
+  if (!token) {
+    return null;
+  }
+
+  const tokenData = jwt.verify(token, JWT_SECRET);
+
+  if (!tokenData?.id) {
+    return null;
+  }
+
+  return await db.collection("Users").findOne({ _id: ObjectID(tokenData.id) });
+};
 
 const typeDefs = gql`
   type Query {
@@ -12,8 +30,11 @@ const typeDefs = gql`
   }
 
   type Mutation {
-    signUp(input: SignUpInput): AuthUser!
-    signIn(input: SignInInput): AuthUser!
+    signUp(input: SignUpInput!): AuthUser!
+    signIn(input: SignInInput!): AuthUser!
+
+    createTaskList(title: String!): TaskList!
+    updateTaskList(id: ID!, title: String!): TaskList!
   }
 
   input SignUpInput {
@@ -61,7 +82,16 @@ const typeDefs = gql`
 
 const resolvers = {
   Query: {
-    myTaskLists: () => [],
+    myTaskLists: async (_, __, { db, user }) => {
+      if (!user) {
+        throw new Error("Authencation Error. Por favor Faça login");
+      }
+
+      return await db
+        .collection("TaskList")
+        .find({ userIds: user._id })
+        .toArray();
+    },
   },
   Mutation: {
     signUp: async (_, { input }, { db }) => {
@@ -77,34 +107,74 @@ const resolvers = {
 
       return {
         user,
-        token: "token",
+        token: getToken(user),
       };
     },
 
     signIn: async (_, { input }, { db }) => {
       const user = await db.collection("Users").findOne({ email: input.email });
+      const isPasswordCorrect =
+        user && bcrypt.compareSync(input.password, user.password);
+
       if (!user) {
         throw new Error("Credenciais invalidas!");
       }
-
       // confirmando se a senha esta correta
-      const isPasswordCorrect = bcrypt.compareSync(
-        input.password,
-        user.password
-      );
       if (!isPasswordCorrect) {
         throw new Error("Credenciais invalidas");
       }
 
       return {
         user,
-        token: "token",
+        token: getToken(user),
       };
+    },
+
+    createTaskList: async (_, { title }, { db, user }) => {
+      if (!user) {
+        throw new Error("Authencation Error. Por favor Faça login");
+      }
+
+      const newTaskList = {
+        title,
+        createdAt: new Date().toISOString(),
+        userIds: [user._id],
+      };
+
+      const result = await db.collection("TaskList").insert(newTaskList);
+      return result.ops[0];
+    },
+
+    updateTaskList: async (_, { id, title }, { db, user }) => {
+      if (!user) {
+        throw new Error("Authencation Error. Por favor Faça login");
+      }
+
+      const result = await db.collection("TaskList").updateOne(
+        {
+          _id: ObjectID(id),
+        },
+        {
+          $set: {
+            title,
+          },
+        }
+      );
+      return await db.collection("TaskList").findOne({ _id: ObjectID(id) });
     },
   },
 
   User: {
     id: ({ _id, id }) => _id || id,
+  },
+
+  TaskList: {
+    id: ({ _id, id }) => _id || id,
+    progress: () => 0,
+    users: async ({ userIds }, _, { db }) =>
+      Promise.all(
+        userIds.map((userId) => db.collection("Users").findOne({ _id: userId }))
+      ),
   },
 };
 
@@ -121,7 +191,18 @@ const start = async () => {
     db,
   };
 
-  const server = new ApolloServer({ typeDefs, resolvers, context });
+  const server = new ApolloServer({
+    typeDefs,
+    resolvers,
+    context: async ({ req }) => {
+      const user = await getUserFromToken(req.headers.authorization, db);
+
+      return {
+        db,
+        user,
+      };
+    },
+  });
 
   server.listen().then(({ url }) => {
     console.log(`🚀 server rodando na porta ${url}`);
