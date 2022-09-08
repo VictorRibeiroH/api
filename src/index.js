@@ -38,6 +38,10 @@ const typeDefs = gql`
     updateTaskList(id: ID!, title: String!): TaskList!
     deleteTaskList(id: ID!): Boolean!
     addUserToTaskList(taskListId: ID!, userId: ID!): TaskList!
+
+    createToDo(content: String!, taskListId: ID!): ToDo!
+    updateToDo(id: ID!, content: String, isCompleted: Boolean): ToDo!
+    deleteToDo(id: ID!): Boolean!
   }
 
   input SignUpInput {
@@ -143,7 +147,7 @@ const resolvers = {
 
     createTaskList: async (_, { title }, { db, user }) => {
       if (!user) {
-        throw new Error("Authencation Error. Por favor Faça login");
+        throw new Error("Authencation Error. Por favor crie sua conta");
       }
 
       const newTaskList = {
@@ -158,7 +162,7 @@ const resolvers = {
 
     updateTaskList: async (_, { id, title }, { db, user }) => {
       if (!user) {
-        throw new Error("Authencation Error. Por favor Faça login");
+        throw new Error("Authencation Error. Por favor crie sua conta");
       }
 
       const result = await db.collection("TaskList").updateOne(
@@ -176,7 +180,7 @@ const resolvers = {
 
     addUserToTaskList: async (_, { taskListId, userId }, { db, user }) => {
       if (!user) {
-        throw new Error("Authencation Error. Por favor Faça login");
+        throw new Error("Authencation Error. Por favor crie sua conta");
       }
 
       const taskList = await db
@@ -208,10 +212,52 @@ const resolvers = {
 
     deleteTaskList: async (_, { id }, { db, user }) => {
       if (!user) {
-        throw new Error("Authencation Error. Por favor Faça login");
+        throw new Error("Authencation Error. Por favor crie sua conta");
       }
 
       await db.collection("TaskList").removeOne({ _id: ObjectID(id) });
+
+      return true;
+    },
+
+    // ToDo
+    createToDo: async (_, { content, taskListId }, { db, user }) => {
+      if (!user) {
+        throw new Error("Authentication Error. Please sign in");
+      }
+      const newToDo = {
+        content,
+        taskListId: ObjectID(taskListId),
+        isCompleted: false,
+      };
+      const result = await db.collection("ToDo").insert(newToDo);
+      return result.ops[0];
+    },
+
+    updateToDo: async (_, data, { db, user }) => {
+      if (!user) {
+        throw new Error("Authentication Error. Por favor crie sua conta");
+      }
+
+      const result = await db.collection("ToDo").updateOne(
+        {
+          _id: ObjectID(data.id),
+        },
+        {
+          $set: data,
+        }
+      );
+
+      return await db.collection("ToDo").findOne({ _id: ObjectID(data.id) });
+    },
+
+    deleteToDo: async (_, { id }, { db, user }) => {
+      if (!user) {
+        throw new Error("Authentication Error. Por favor crie sua conta");
+      }
+
+      // TODO only collaborators of this task list should be able to delete
+      await db.collection("ToDo").removeOne({ _id: ObjectID(id) });
 
       return true;
     },
@@ -223,11 +269,34 @@ const resolvers = {
 
   TaskList: {
     id: ({ _id, id }) => _id || id,
-    progress: () => 0,
+    progress: async ({ _id }, _, { db }) => {
+      const todos = await db
+        .collection("ToDo")
+        .find({ taskListId: ObjectID(_id) })
+        .toArray();
+      const completed = todos.filter((todo) => todo.isCompleted);
+
+      if (todos.length === 0) {
+        return 0;
+      }
+
+      return (100 * completed.length) / todos.length;
+    },
     users: async ({ userIds }, _, { db }) =>
       Promise.all(
         userIds.map((userId) => db.collection("Users").findOne({ _id: userId }))
       ),
+    todos: async ({ _id }, _, { db }) =>
+      await db
+        .collection("ToDo")
+        .find({ taskListId: ObjectID(_id) })
+        .toArray(),
+  },
+
+  ToDo: {
+    id: ({ _id, id }) => _id || id,
+    taskList: async ({ taskListId }, _, { db }) =>
+      await db.collection("TaskList").findOne({ _id: ObjectID(taskListId) }),
   },
 };
 
